@@ -5,14 +5,14 @@
 // ============================================================
 require('dotenv').config();
 const express = require('express');
-const cors    = require('cors');
+const cors = require('cors');
 const { Pool } = require('pg');
-const bcrypt  = require('bcryptjs');
-const jwt     = require('jsonwebtoken');
-const multer  = require('multer');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-const twilio  = require('twilio');
-const crypto  = require('crypto');
+const twilio = require('twilio');
+const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -31,7 +31,7 @@ const pool = new Pool({
 // ============================================================
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
@@ -148,9 +148,9 @@ app.get('/api/dashboard/public', async (req, res) => {
     `)
   ]);
   res.json({
-    totals:      totals.rows[0],
-    byDistrict:  districtStats.rows,
-    byDept:      deptStats.rows
+    totals: totals.rows[0],
+    byDistrict: districtStats.rows,
+    byDept: deptStats.rows
   });
 });
 
@@ -186,7 +186,7 @@ app.get('/api/complaints/track/:complaintNo', async (req, res) => {
 
   res.json({
     complaint: result.rows[0],
-    timeline:  timeline.rows
+    timeline: timeline.rows
   });
 });
 
@@ -256,7 +256,7 @@ app.post('/api/citizens/login', async (req, res) => {
 });
 // ============================================================
 // OTP VERIFICATION
-// ============================================================
+// ============================================================ß
 
 const otpStore = new Map();
 
@@ -268,20 +268,24 @@ app.post('/api/otp/send', async (req, res) => {
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   const expires = Date.now() + 10 * 60 * 1000;
   otpStore.set(phone, { otp, expires });
-  try {
-    const response = await fetch('https://www.fast2sms.com/dev/bulkV2', {
-      method: 'POST',
-      headers: {
-        'authorization': process.env.FAST2SMS_API_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ route: 'otp', variables_values: otp, numbers: phone })
-    });
-    const data = await response.json();
-    console.log('Fast2SMS:', data);
-  } catch (err) {
-    console.log(`OTP for ${phone}: ${otp}`);
+
+  // Always log OTP for debugging
+  console.log(`OTP for ${phone}: ${otp}`);
+
+  // Send via Twilio if configured
+  if (twilioClient) {
+    try {
+      await twilioClient.messages.create({
+        body: `Your Vaani OTP is ${otp}. Valid for 10 minutes. - AP Grievance Portal`,
+        from: process.env.TWILIO_PHONE,
+        to: '+91' + phone
+      });
+      console.log(`SMS sent to ${phone}`);
+    } catch (err) {
+      console.error('Twilio SMS failed:', err.message);
+    }
   }
+
   res.json({
     message: 'OTP sent successfully',
     dev_otp: process.env.NODE_ENV !== 'production' ? otp : undefined
@@ -428,7 +432,7 @@ app.post('/api/complaints', authMiddleware, upload.array('attachments', 5), asyn
     `, [complaint.id, req.user.id, `Complaint registered: ${complaintNo}`]);
 
     res.status(201).json({
-      message:      'Complaint filed successfully',
+      message: 'Complaint filed successfully',
       complaint_no: complaintNo,
       complaint_id: complaint.id,
       sla_deadline: slaDeadline
@@ -475,7 +479,7 @@ app.post('/api/officers/login', async (req, res) => {
   const officer = result.rows[0];
 
   // Check plain text first (for dev), then bcrypt
-  const validPlain  = password === 'Vaani@1234';
+  const validPlain = password === 'Vaani@1234';
   const validBcrypt = await bcrypt.compare(password, officer.password_hash);
   if (!validPlain && !validBcrypt) {
     return res.status(401).json({ error: 'Invalid credentials' });
@@ -494,7 +498,7 @@ app.post('/api/officers/login', async (req, res) => {
 // Get complaints assigned to officer's department
 app.get('/api/officer/complaints', officerOnly, async (req, res) => {
   const { status, priority, district_id, page = 1 } = req.query;
-  const limit  = 20;
+  const limit = 20;
   const offset = (page - 1) * limit;
 
   let where = ['1=1'];
@@ -506,8 +510,8 @@ app.get('/api/officer/complaints', officerOnly, async (req, res) => {
     where.push(`c.department_id = $${idx++}`);
     params.push(req.user.dept);
   }
-  if (status)      { where.push(`c.status = $${idx++}`);      params.push(status); }
-  if (priority)    { where.push(`c.priority = $${idx++}`);     params.push(priority); }
+  if (status) { where.push(`c.status = $${idx++}`); params.push(status); }
+  if (priority) { where.push(`c.priority = $${idx++}`); params.push(priority); }
   if (district_id) { where.push(`c.district_id = $${idx++}`); params.push(district_id); }
 
   params.push(limit, offset);
@@ -535,7 +539,7 @@ app.get('/api/officer/complaints', officerOnly, async (req, res) => {
 // Update complaint status (officer action)
 app.patch('/api/officer/complaints/:id/status', officerOnly, async (req, res) => {
   const { status, note } = req.body;
-  const validStatuses = ['acknowledged','assigned','in_progress','resolved','rejected'];
+  const validStatuses = ['acknowledged', 'assigned', 'in_progress', 'resolved', 'rejected'];
 
   if (!validStatuses.includes(status)) {
     return res.status(400).json({ error: 'Invalid status' });
