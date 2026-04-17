@@ -254,6 +254,56 @@ app.post('/api/citizens/login', async (req, res) => {
   );
   res.json({ token, citizen });
 });
+// ============================================================
+// OTP VERIFICATION
+// ============================================================
+
+const otpStore = new Map();
+
+app.post('/api/otp/send', async (req, res) => {
+  const { phone } = req.body;
+  if (!phone || phone.length !== 10) {
+    return res.status(400).json({ error: 'Valid 10-digit phone number required' });
+  }
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expires = Date.now() + 10 * 60 * 1000;
+  otpStore.set(phone, { otp, expires });
+  try {
+    const response = await fetch('https://www.fast2sms.com/dev/bulkV2', {
+      method: 'POST',
+      headers: {
+        'authorization': process.env.FAST2SMS_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ route: 'otp', variables_values: otp, numbers: phone })
+    });
+    const data = await response.json();
+    console.log('Fast2SMS:', data);
+  } catch (err) {
+    console.log(`OTP for ${phone}: ${otp}`);
+  }
+  res.json({
+    message: 'OTP sent successfully',
+    dev_otp: process.env.NODE_ENV !== 'production' ? otp : undefined
+  });
+});
+
+app.post('/api/otp/verify', async (req, res) => {
+  const { phone, otp } = req.body;
+  const record = otpStore.get(phone);
+  if (!record) {
+    return res.status(400).json({ error: 'No OTP requested. Please request a new OTP.' });
+  }
+  if (Date.now() > record.expires) {
+    otpStore.delete(phone);
+    return res.status(400).json({ error: 'OTP expired. Please request a new one.' });
+  }
+  if (record.otp !== otp) {
+    return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
+  }
+  otpStore.delete(phone);
+  res.json({ verified: true, message: 'Phone verified successfully' });
+});
 
 // ============================================================
 // ROUTES — FILE A COMPLAINT
