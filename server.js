@@ -257,57 +257,66 @@ app.post('/api/citizens/login', async (req, res) => {
 // ============================================================
 // OTP VERIFICATION
 // ============================================================ß
+// ============================================================
+// OTP VERIFICATION (Twilio Verify)
+// ============================================================
 
-const otpStore = new Map();
+const otpStore = new Map(); // fallback for dev
 
 app.post('/api/otp/send', async (req, res) => {
   const { phone } = req.body;
   if (!phone || phone.length !== 10) {
     return res.status(400).json({ error: 'Valid 10-digit phone number required' });
   }
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expires = Date.now() + 10 * 60 * 1000;
-  otpStore.set(phone, { otp, expires });
 
-  // Always log OTP for debugging
-  console.log(`OTP for ${phone}: ${otp}`);
-
-  // Send via Twilio if configured
-  if (twilioClient) {
+  // Use Twilio Verify if configured
+  if (twilioClient && process.env.TWILIO_VERIFY_SID) {
     try {
-      await twilioClient.messages.create({
-        body: `Your Vaani OTP is ${otp}. Valid for 10 minutes. - AP Grievance Portal`,
-        from: process.env.TWILIO_PHONE,
-        to: '+91' + phone
-      });
-      console.log(`SMS sent to ${phone}`);
+      await twilioClient.verify.v2
+        .services(process.env.TWILIO_VERIFY_SID)
+        .verifications.create({ to: '+91' + phone, channel: 'sms' });
+      return res.json({ message: 'OTP sent successfully' });
     } catch (err) {
-      console.error('Twilio SMS failed:', err.message);
+      console.error('Twilio Verify error:', err.message);
     }
   }
 
-  res.json({
-    message: 'OTP sent successfully',
-    dev_otp: process.env.NODE_ENV !== 'production' ? otp : undefined
-  });
+  // Fallback — generate OTP locally and log it
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  otpStore.set(phone, { otp, expires: Date.now() + 10 * 60 * 1000 });
+  console.log(`OTP for ${phone}: ${otp}`);
+  res.json({ message: 'OTP sent', dev_otp: otp });
 });
 
 app.post('/api/otp/verify', async (req, res) => {
   const { phone, otp } = req.body;
+
+  // Use Twilio Verify if configured
+  if (twilioClient && process.env.TWILIO_VERIFY_SID) {
+    try {
+      const check = await twilioClient.verify.v2
+        .services(process.env.TWILIO_VERIFY_SID)
+        .verificationChecks.create({ to: '+91' + phone, code: otp });
+      if (check.status === 'approved') {
+        return res.json({ verified: true, message: 'Phone verified successfully' });
+      } else {
+        return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
+      }
+    } catch (err) {
+      console.error('Twilio Verify check error:', err.message);
+      return res.status(400).json({ error: 'Verification failed. Please try again.' });
+    }
+  }
+
+  // Fallback — check local store
   const record = otpStore.get(phone);
-  if (!record) {
-    return res.status(400).json({ error: 'No OTP requested. Please request a new OTP.' });
-  }
-  if (Date.now() > record.expires) {
-    otpStore.delete(phone);
-    return res.status(400).json({ error: 'OTP expired. Please request a new one.' });
-  }
-  if (record.otp !== otp) {
-    return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
-  }
+  if (!record) return res.status(400).json({ error: 'No OTP requested. Please request a new OTP.' });
+  if (Date.now() > record.expires) { otpStore.delete(phone); return res.status(400).json({ error: 'OTP expired.' }); }
+  if (record.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP.' });
   otpStore.delete(phone);
   res.json({ verified: true, message: 'Phone verified successfully' });
 });
+
 
 // ============================================================
 // ROUTES — FILE A COMPLAINT
