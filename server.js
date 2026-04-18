@@ -705,3 +705,99 @@ async function runEscalation() {
 
 runEscalation();
 setInterval(runEscalation, ESCALATION_INTERVAL);
+
+// ============================================================
+// UPVOTING
+// ============================================================
+
+// Get upvote count + check if phone already upvoted
+app.get('/api/complaints/:complaintNo/upvotes', async (req, res) => {
+  const { phone } = req.query;
+  try {
+    const complaint = await pool.query(
+      'SELECT id, upvote_count FROM complaints WHERE complaint_no = $1',
+      [req.params.complaintNo]
+    );
+    if (!complaint.rows.length) return res.status(404).json({ error: 'Complaint not found' });
+
+    let hasUpvoted = false;
+    if (phone) {
+      const existing = await pool.query(
+        'SELECT id FROM complaint_upvotes WHERE complaint_id = $1 AND citizen_phone = $2',
+        [complaint.rows[0].id, phone]
+      );
+      hasUpvoted = existing.rows.length > 0;
+    }
+
+    res.json({
+      upvote_count: complaint.rows[0].upvote_count || 0,
+      has_upvoted: hasUpvoted
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Upvote a complaint
+app.post('/api/complaints/:complaintNo/upvote', async (req, res) => {
+  const { phone } = req.body;
+  if (!phone || phone.length !== 10) {
+    return res.status(400).json({ error: 'Valid phone number required' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const complaint = await client.query(
+      'SELECT id, upvote_count, priority FROM complaints WHERE complaint_no = $1',
+      [req.params.complaintNo]
+    );
+    if (!complaint.rows.length) return res.status(404).json({ error: 'Complaint not found' });
+
+    const { id, upvote_count, priority } = complaint.rows[0];
+
+    // Check already upvoted
+    const existing = await client.query(
+      'SELECT id FROM complaint_upvotes WHERE complaint_id = $1 AND citizen_phone = $2',
+      [id, phone]
+    );
+    if (existing.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Already upvoted', upvote_count });
+    }
+
+    // Insert upvote
+    await client.query(
+      'INSERT INTO complaint_upvotes (complaint_id, citizen_phone) VALUES ($1, $2)',
+      [id, phone]
+    );
+
+    // Increment count
+    const newCount = (upvote_count || 0) + 1;
+    await client.query(
+      'UPDATE complaints SET upvote_count = $1 WHERE id = $2',
+      [newCount, id]
+    );
+
+    // Auto-escalate to high priority if 10+ upvotes
+    if (newCount >= 10 && priority === 'normal') {
+      await client.query(
+        'UPDATE complaints SET priority = $1 WHERE id = $2',
+        ['high', id]
+      );
+      await client.query(`
+        INSERT INTO complaint_timeline (complaint_id, status, note)
+        VALUES ($1, 'in_progress', $2)
+      `, [id, `Community escalated — ${newCount} citizens have upvoted this complaint. Priority raised to High.`]);
+    }
+
+    await client.query('COMMIT');
+    res.json({ message: 'Upvoted successfully', upvote_count: newCount });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
