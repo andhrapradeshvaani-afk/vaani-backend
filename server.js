@@ -634,3 +634,74 @@ app.listen(PORT, () => {
 });
 
 module.exports = app;
+
+// ============================================================
+// AUTO-ESCALATION CRON JOB (runs every hour)
+// ============================================================
+const ESCALATION_INTERVAL = 60 * 60 * 1000; // 1 hour
+
+async function runEscalation() {
+  console.log('🔄 Running SLA escalation check...');
+  const client = await pool.connect();
+  try {
+    const overdue = await client.query(`
+      SELECT 
+        c.id, c.complaint_no, c.title, c.priority,
+        c.sla_deadline, c.district_id, c.department_id,
+        cit.phone AS citizen_phone, cit.name AS citizen_name,
+        cit.lang_pref,
+        dep.name AS department_name
+      FROM complaints c
+      LEFT JOIN citizens cit ON cit.id = c.citizen_id
+      LEFT JOIN departments dep ON dep.id = c.department_id
+      WHERE c.sla_deadline < NOW()
+        AND c.status NOT IN ('resolved', 'rejected')
+        AND c.is_overdue = FALSE
+    `);
+
+    console.log('Found ' + overdue.rows.length + ' newly overdue complaints');
+
+    for (const complaint of overdue.rows) {
+      await client.query('BEGIN');
+      try {
+        await client.query(`
+          UPDATE complaints 
+          SET is_overdue = TRUE,
+              priority = 'emergency',
+              updated_at = NOW()
+          WHERE id = $1
+        `, [complaint.id]);
+
+        await client.query(`
+          INSERT INTO complaint_timeline (complaint_id, status, note)
+          VALUES ($1, $2, $3)
+        `, [
+          complaint.id,
+          'in_progress',
+          'SLA Breached — Auto-escalated to Emergency priority. Requires immediate attention.'
+        ]);
+
+        if (complaint.citizen_phone) {
+          const msg = complaint.lang_pref === 'te'
+            ? 'మీ ఫిర్యాదు ' + complaint.complaint_no + ' గడువు దాటింది. మేము దీన్ని అత్యవసర స్థాయికి పెంచాము.'
+            : 'Your complaint ' + complaint.complaint_no + ' has breached its SLA deadline and has been escalated to Emergency priority.';
+          await sendSMS(complaint.citizen_phone, msg);
+        }
+
+        await client.query('COMMIT');
+        console.log('Escalated: ' + complaint.complaint_no);
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Failed to escalate ' + complaint.complaint_no + ': ' + err.message);
+      }
+    }
+    console.log('Escalation check complete');
+  } catch (err) {
+    console.error('Escalation error:', err.message);
+  } finally {
+    client.release();
+  }
+}
+
+runEscalation();
+setInterval(runEscalation, ESCALATION_INTERVAL);
