@@ -376,8 +376,8 @@ app.post('/api/complaints', authMiddleware, upload.array('attachments', 5), asyn
       INSERT INTO complaints (
         complaint_no, citizen_id, department_id, district_id, mandal_id,
         village, title, description, priority, latitude, longitude,
-        address, sla_deadline, is_anonymous, source
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        address, sla_deadline, is_anonymous, source, is_public
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
       RETURNING id, complaint_no, created_at
     `, [
       complaintNo,
@@ -388,7 +388,8 @@ app.post('/api/complaints', authMiddleware, upload.array('attachments', 5), asyn
       latitude || null, longitude || null, address || null,
       slaDeadline,
       is_anonymous === 'true',
-      req.body.source || 'web'
+      req.body.source || 'web',
+      [1,2,3,5,6].includes(parseInt(department_id))
     ]);
 
     const complaint = compResult.rows[0];
@@ -801,3 +802,50 @@ app.post('/api/complaints/:complaintNo/upvote', async (req, res) => {
     client.release();
   }
 });
+
+// ============================================================
+// PUBLIC COMPLAINTS FEED
+// ============================================================
+app.get('/api/complaints/public', async (req, res) => {
+  const { district_id, department_id, page = 1 } = req.query;
+  const limit = 20;
+  const offset = (page - 1) * limit;
+
+  let where = ['c.is_public = TRUE', "c.status NOT IN ('rejected')"];
+  let params = [];
+  let idx = 1;
+
+  if (district_id) { where.push(`c.district_id = $${idx++}`); params.push(district_id); }
+  if (department_id) { where.push(`c.department_id = $${idx++}`); params.push(department_id); }
+
+  params.push(limit, offset);
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        c.complaint_no, c.title, c.status, c.priority,
+        c.created_at, c.sla_deadline, c.is_overdue,
+        c.upvote_count,
+        d.name AS district, d.code AS district_code,
+        dep.name AS department, dep.code AS dept_code,
+        m.name AS mandal
+      FROM complaints c
+      JOIN districts d ON d.id = c.district_id
+      JOIN departments dep ON dep.id = c.department_id
+      LEFT JOIN mandals m ON m.id = c.mandal_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY c.upvote_count DESC, c.created_at DESC
+      LIMIT $${idx++} OFFSET $${idx}
+    `, params);
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Auto-set is_public helper (used during complaint filing)
+async function isPublicDepartment(departmentId) {
+  const PUBLIC_DEPT_IDS = [1, 2, 3, 5, 6]; // Roads, Water, Elec, Edu, Municipal
+  return PUBLIC_DEPT_IDS.includes(parseInt(departmentId));
+}
