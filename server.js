@@ -713,7 +713,7 @@ setInterval(runEscalation, ESCALATION_INTERVAL);
 
 // Get upvote count + check if phone already upvoted
 app.get('/api/complaints/:complaintNo/upvotes', async (req, res) => {
-  const { phone } = req.query;
+  const voterIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
   try {
     const complaint = await pool.query(
       'SELECT id, upvote_count FROM complaints WHERE complaint_no = $1',
@@ -721,18 +721,14 @@ app.get('/api/complaints/:complaintNo/upvotes', async (req, res) => {
     );
     if (!complaint.rows.length) return res.status(404).json({ error: 'Complaint not found' });
 
-    let hasUpvoted = false;
-    if (phone) {
-      const existing = await pool.query(
-        'SELECT id FROM complaint_upvotes WHERE complaint_id = $1 AND citizen_phone = $2',
-        [complaint.rows[0].id, phone]
-      );
-      hasUpvoted = existing.rows.length > 0;
-    }
+    const existing = await pool.query(
+      'SELECT id FROM complaint_upvotes WHERE complaint_id = $1 AND voter_ip = $2',
+      [complaint.rows[0].id, voterIp]
+    );
 
     res.json({
       upvote_count: complaint.rows[0].upvote_count || 0,
-      has_upvoted: hasUpvoted
+      has_upvoted: existing.rows.length > 0
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -741,10 +737,8 @@ app.get('/api/complaints/:complaintNo/upvotes', async (req, res) => {
 
 // Upvote a complaint
 app.post('/api/complaints/:complaintNo/upvote', async (req, res) => {
-  const { phone } = req.body;
-  if (!phone || phone.length !== 10) {
-    return res.status(400).json({ error: 'Valid phone number required' });
-  }
+  // Get IP address — works on Render behind proxy
+  const voterIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
 
   const client = await pool.connect();
   try {
@@ -758,20 +752,20 @@ app.post('/api/complaints/:complaintNo/upvote', async (req, res) => {
 
     const { id, upvote_count, priority } = complaint.rows[0];
 
-    // Check already upvoted
+    // Check already upvoted by this IP
     const existing = await client.query(
-      'SELECT id FROM complaint_upvotes WHERE complaint_id = $1 AND citizen_phone = $2',
-      [id, phone]
+      'SELECT id FROM complaint_upvotes WHERE complaint_id = $1 AND voter_ip = $2',
+      [id, voterIp]
     );
     if (existing.rows.length) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Already upvoted', upvote_count });
     }
 
-    // Insert upvote
+    // Insert upvote with IP only — no phone collected
     await client.query(
-      'INSERT INTO complaint_upvotes (complaint_id, citizen_phone) VALUES ($1, $2)',
-      [id, phone]
+      'INSERT INTO complaint_upvotes (complaint_id, voter_ip) VALUES ($1, $2)',
+      [id, voterIp]
     );
 
     // Increment count
