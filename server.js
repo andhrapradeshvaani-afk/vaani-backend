@@ -878,7 +878,7 @@ app.get('/api/officer/complaints/:id', officerOnly, async (req, res) => {
       SELECT file_url, file_type, file_size_kb
       FROM complaint_attachments
       WHERE complaint_id = $1::uuid
-      ORDER BY created_at ASC
+      ORDER BY uploaded_at ASC
     `, [req.params.id]);
 
     // Get timeline
