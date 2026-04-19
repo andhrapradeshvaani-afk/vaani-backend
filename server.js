@@ -843,3 +843,59 @@ async function isPublicDepartment(departmentId) {
   const PUBLIC_DEPT_IDS = [1, 2, 3, 5, 6]; // Roads, Water, Elec, Edu, Municipal
   return PUBLIC_DEPT_IDS.includes(parseInt(departmentId));
 }
+
+// Full complaint detail for officers (includes description, attachments, GPS)
+app.get('/api/officer/complaints/:id', officerOnly, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        c.id, c.complaint_no, c.title, c.description,
+        c.status, c.priority, c.created_at, c.sla_deadline,
+        c.is_overdue, c.upvote_count,
+        c.latitude, c.longitude, c.address,
+        c.village, c.is_anonymous,
+        d.name AS district, d.code AS district_code,
+        dep.name AS department, dep.code AS dept_code,
+        m.name AS mandal,
+        cit.name AS citizen_name, cit.phone AS citizen_phone,
+        cit.lang_pref,
+        o.name AS assigned_to
+      FROM complaints c
+      JOIN districts d ON d.id = c.district_id
+      JOIN departments dep ON dep.id = c.department_id
+      LEFT JOIN mandals m ON m.id = c.mandal_id
+      LEFT JOIN citizens cit ON cit.id = c.citizen_id
+      LEFT JOIN govt_officers o ON o.id = c.assigned_to
+      WHERE c.id = $1::uuid
+    `, [req.params.id]);
+
+    if (!result.rows.length) return res.status(404).json({ error: 'Complaint not found' });
+
+    const complaint = result.rows[0];
+
+    // Get attachments
+    const attachments = await pool.query(`
+      SELECT file_url, file_type, file_size_kb
+      FROM complaint_attachments
+      WHERE complaint_id = $1::uuid
+      ORDER BY created_at ASC
+    `, [req.params.id]);
+
+    // Get timeline
+    const timeline = await pool.query(`
+      SELECT t.status, t.note, t.created_at, o.name AS updated_by
+      FROM complaint_timeline t
+      LEFT JOIN govt_officers o ON o.id = t.updated_by
+      WHERE t.complaint_id = $1::uuid
+      ORDER BY t.created_at ASC
+    `, [req.params.id]);
+
+    res.json({
+      complaint,
+      attachments: attachments.rows,
+      timeline: timeline.rows,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
