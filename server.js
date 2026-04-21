@@ -14,16 +14,69 @@ const cloudinary = require('cloudinary').v2;
 const twilio = require('twilio');
 const crypto = require('crypto');
 
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+
 const app = express();
+
+// Security headers
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: false,
+}));
+
+// CORS
 app.use(cors());
 app.use(express.json());
+
+// General rate limit — 100 requests per 15 mins per IP
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: { error: 'Too many requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+}));
+
+// Strict rate limit for OTP — 5 per hour per IP
+const otpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many OTP requests. Please try again after an hour.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Strict rate limit for complaint filing — 10 per hour per IP
+const complaintLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many complaints filed. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Upvote rate limit — 20 per hour per IP
+const upvoteLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many upvotes. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Health check
+app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
 // ============================================================
 // DATABASE CONNECTION (Supabase / PostgreSQL)
 // ============================================================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  max: 20,                  // max connections in pool
+  idleTimeoutMillis: 30000, // close idle connections after 30s
+  connectionTimeoutMillis: 2000, // fail fast if can't connect
 });
 
 // ============================================================
@@ -263,7 +316,7 @@ app.post('/api/citizens/login', async (req, res) => {
 
 const otpStore = new Map(); // fallback for dev
 
-app.post('/api/otp/send', async (req, res) => {
+app.post('/api/otp/send', otpLimiter, async (req, res) => {
   const { phone } = req.body;
   if (!phone || phone.length !== 10) {
     return res.status(400).json({ error: 'Valid 10-digit phone number required' });
@@ -288,7 +341,7 @@ app.post('/api/otp/send', async (req, res) => {
   res.json({ message: 'OTP sent', dev_otp: otp });
 });
 
-app.post('/api/otp/verify', async (req, res) => {
+app.post('/api/otp/verify', otpLimiter, async (req, res) => {
   const { phone, otp } = req.body;
 
   // Use Twilio Verify if configured
@@ -324,7 +377,7 @@ app.post('/api/otp/verify', async (req, res) => {
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
-app.post('/api/complaints', authMiddleware, upload.array('attachments', 5), async (req, res) => {
+app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('attachments', 5), async (req, res) => {
   const {
     department_id, district_id, mandal_id, village,
     title, description, priority,
