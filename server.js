@@ -952,3 +952,20 @@ app.get('/api/officer/complaints/:id', officerOnly, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ============================================================
+// CM DASHBOARD
+// ============================================================
+app.get('/api/dashboard/cm', async (req, res) => {
+  try {
+    const [totals, byDistrict, byDept, recentActivity, slaPerformance, topIssues] = await Promise.all([
+      pool.query(`SELECT COUNT(*) AS total, COUNT(CASE WHEN status='resolved' THEN 1 END) AS resolved, COUNT(CASE WHEN status='in_progress' THEN 1 END) AS in_progress, COUNT(CASE WHEN status='submitted' THEN 1 END) AS pending, COUNT(CASE WHEN is_overdue=TRUE THEN 1 END) AS overdue, COUNT(CASE WHEN priority='emergency' THEN 1 END) AS emergency, COUNT(CASE WHEN created_at >= NOW()-INTERVAL '7 days' THEN 1 END) AS last_7_days, COUNT(CASE WHEN created_at >= NOW()-INTERVAL '24 hours' THEN 1 END) AS last_24_hours FROM complaints`),
+      pool.query(`SELECT d.name AS district, d.code AS district_code, COUNT(c.id) AS total, COUNT(CASE WHEN c.status='resolved' THEN 1 END) AS resolved, COUNT(CASE WHEN c.is_overdue=TRUE THEN 1 END) AS overdue, COUNT(CASE WHEN c.priority='emergency' THEN 1 END) AS emergency, ROUND(COUNT(CASE WHEN c.status='resolved' THEN 1 END)*100.0/NULLIF(COUNT(c.id),0),1) AS resolution_pct FROM districts d LEFT JOIN complaints c ON c.district_id=d.id GROUP BY d.id,d.name,d.code ORDER BY COUNT(c.id) DESC`),
+      pool.query(`SELECT dep.name AS department, dep.code, dep.sla_days, COUNT(c.id) AS total, COUNT(CASE WHEN c.status='resolved' THEN 1 END) AS resolved, COUNT(CASE WHEN c.is_overdue=TRUE THEN 1 END) AS overdue, ROUND(COUNT(CASE WHEN c.status='resolved' THEN 1 END)*100.0/NULLIF(COUNT(c.id),0),1) AS resolution_pct FROM departments dep LEFT JOIN complaints c ON c.department_id=dep.id GROUP BY dep.id,dep.name,dep.code,dep.sla_days ORDER BY COUNT(c.id) DESC`),
+      pool.query(`SELECT c.complaint_no, c.title, c.status, c.priority, c.created_at, c.is_overdue, d.name AS district, dep.name AS department FROM complaints c JOIN districts d ON d.id=c.district_id JOIN departments dep ON dep.id=c.department_id ORDER BY c.created_at DESC LIMIT 10`),
+      pool.query(`SELECT dep.name AS department, dep.sla_days, COUNT(c.id) AS total, COUNT(CASE WHEN c.is_overdue=TRUE THEN 1 END) AS breached, ROUND(COUNT(CASE WHEN c.is_overdue=TRUE THEN 1 END)*100.0/NULLIF(COUNT(c.id),0),1) AS breach_pct FROM departments dep LEFT JOIN complaints c ON c.department_id=dep.id WHERE c.id IS NOT NULL GROUP BY dep.id,dep.name,dep.sla_days ORDER BY breach_pct DESC NULLS LAST`),
+      pool.query(`SELECT c.complaint_no, c.title, c.upvote_count, c.status, c.priority, d.name AS district, dep.name AS department FROM complaints c JOIN districts d ON d.id=c.district_id JOIN departments dep ON dep.id=c.department_id WHERE c.upvote_count>0 ORDER BY c.upvote_count DESC LIMIT 5`),
+    ]);
+    res.json({ totals: totals.rows[0], byDistrict: byDistrict.rows, byDept: byDept.rows, recentActivity: recentActivity.rows, slaPerformance: slaPerformance.rows, topIssues: topIssues.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
