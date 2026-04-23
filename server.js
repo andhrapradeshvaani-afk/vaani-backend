@@ -343,13 +343,15 @@ app.post('/api/otp/send', otpLimiter, async (req, res) => {
       const response = await new Promise((resolve, reject) => {
         const req2 = https.request({
           hostname: 'control.msg91.com',
-          path: `/api/v5/otp?template_id=${MSG91_TEMPLATE_ID}&mobile=91${phone}&authkey=${MSG91_AUTH_KEY}&realTimeResponse=1`,
+          path: `/api/v5/otp?template_id=${MSG91_TEMPLATE_ID}&mobile=91${phone}&authkey=${MSG91_AUTH_KEY}&realTimeResponse=1&sender=VAANI`,
           method: 'GET',
         }, (res2) => {
           let data = '';
           res2.on('data', chunk => data += chunk);
-          res2.on('end', () => resolve(JSON.parse(data)));
-        });
+          res2.on('end', () => {
+            console.log('MSG91 send response:', data);
+            try { resolve(JSON.parse(data)); } catch(e) { resolve({ type: 'error', message: data }); }
+          });        });
         req2.on('error', reject);
         req2.end();
       });
