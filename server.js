@@ -11,7 +11,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-const twilio = require('twilio');
+const https = require('https');
 const crypto = require('crypto');
 
 const rateLimit = require('express-rate-limit');
@@ -89,15 +89,11 @@ cloudinary.config({
 });
 
 // ============================================================
-// TWILIO (SMS)
+// MSG91 (SMS)
 // ============================================================
-let twilioClient = null;
-if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_ACCOUNT_SID !== 'your_twilio_sid') {
-  twilioClient = twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-  );
-}
+const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
+const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID;
+
 
 // ============================================================
 // HELPERS
@@ -105,15 +101,33 @@ if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_ACCOUNT_SID !== 'your_t
 
 // Send SMS to citizen
 async function sendSMS(phone, message) {
-  if (!twilioClient) {
-    console.log('SMS skipped (Twilio not configured):', message);
+  if (!MSG91_AUTH_KEY) {
+    console.log('SMS skipped (MSG91 not configured):', message);
     return;
   }
   try {
-    await twilioClient.messages.create({
-      body: message,
-      from: process.env.TWILIO_PHONE,
-      to: '+91' + phone
+    const payload = JSON.stringify({
+      sender: 'VAANI',
+      route: '4',
+      country: '91',
+      sms: [{ message, to: ['91' + phone] }]
+    });
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.msg91.com',
+        path: '/api/sendhttp.php',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'authkey': MSG91_AUTH_KEY,
+        }
+      }, (res) => {
+        res.on('data', () => {});
+        res.on('end', resolve);
+      });
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
     });
   } catch (err) {
     console.error('SMS failed:', err.message);
@@ -322,54 +336,73 @@ app.post('/api/otp/send', otpLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Valid 10-digit phone number required' });
   }
 
-  // Use Twilio Verify if configured
-  if (twilioClient && process.env.TWILIO_VERIFY_SID) {
+  if (MSG91_AUTH_KEY && MSG91_TEMPLATE_ID) {
     try {
-      await twilioClient.verify.v2
-        .services(process.env.TWILIO_VERIFY_SID)
-        .verifications.create({ to: '+91' + phone, channel: 'sms' });
-      return res.json({ message: 'OTP sent successfully' });
+      const response = await new Promise((resolve, reject) => {
+        const req2 = https.request({
+          hostname: 'control.msg91.com',
+          path: `/api/v5/otp?template_id=${MSG91_TEMPLATE_ID}&mobile=91${phone}&authkey=${MSG91_AUTH_KEY}&realTimeResponse=1`,
+          method: 'GET',
+        }, (res2) => {
+          let data = '';
+          res2.on('data', chunk => data += chunk);
+          res2.on('end', () => resolve(JSON.parse(data)));
+        });
+        req2.on('error', reject);
+        req2.end();
+      });
+      if (response.type === 'success') {
+        return res.json({ message: 'OTP sent successfully' });
+      }
+      throw new Error(response.message || 'MSG91 error');
     } catch (err) {
-      console.error('Twilio Verify error:', err.message);
+      console.error('MSG91 OTP error:', err.message);
     }
   }
 
-  // Fallback — generate OTP locally and log it
+  // Fallback dev OTP
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   otpStore.set(phone, { otp, expires: Date.now() + 10 * 60 * 1000 });
-  console.log(`OTP for ${phone}: ${otp}`);
+  console.log(`Dev OTP for ${phone}: ${otp}`);
   res.json({ message: 'OTP sent', dev_otp: otp });
 });
 
 app.post('/api/otp/verify', otpLimiter, async (req, res) => {
   const { phone, otp } = req.body;
 
-  // Use Twilio Verify if configured
-  if (twilioClient && process.env.TWILIO_VERIFY_SID) {
+  if (MSG91_AUTH_KEY && MSG91_TEMPLATE_ID) {
     try {
-      const check = await twilioClient.verify.v2
-        .services(process.env.TWILIO_VERIFY_SID)
-        .verificationChecks.create({ to: '+91' + phone, code: otp });
-      if (check.status === 'approved') {
+      const response = await new Promise((resolve, reject) => {
+        const req2 = https.request({
+          hostname: 'control.msg91.com',
+          path: `/api/v5/otp/verify?mobile=91${phone}&otp=${otp}&authkey=${MSG91_AUTH_KEY}`,
+          method: 'GET',
+        }, (res2) => {
+          let data = '';
+          res2.on('data', chunk => data += chunk);
+          res2.on('end', () => resolve(JSON.parse(data)));
+        });
+        req2.on('error', reject);
+        req2.end();
+      });
+      if (response.type === 'success') {
         return res.json({ verified: true, message: 'Phone verified successfully' });
-      } else {
-        return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
       }
+      return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
     } catch (err) {
-      console.error('Twilio Verify check error:', err.message);
+      console.error('MSG91 verify error:', err.message);
       return res.status(400).json({ error: 'Verification failed. Please try again.' });
     }
   }
 
-  // Fallback — check local store
+  // Fallback dev OTP check
   const record = otpStore.get(phone);
-  if (!record) return res.status(400).json({ error: 'No OTP requested. Please request a new OTP.' });
+  if (!record) return res.status(400).json({ error: 'No OTP requested.' });
   if (Date.now() > record.expires) { otpStore.delete(phone); return res.status(400).json({ error: 'OTP expired.' }); }
   if (record.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP.' });
   otpStore.delete(phone);
   res.json({ verified: true, message: 'Phone verified successfully' });
 });
-
 
 // ============================================================
 // ROUTES — FILE A COMPLAINT
