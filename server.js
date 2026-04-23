@@ -355,7 +355,8 @@ app.post('/api/otp/send', otpLimiter, async (req, res) => {
         req2.on('error', reject);
         req2.end();
       });
-      if (response.type === 'success') {
+          if (response.type === 'success') {
+        // Temporary: return dev_otp until DLT registration complete
         return res.json({ message: 'OTP sent successfully' });
       }
       throw new Error(response.message || 'MSG91 error');
@@ -374,7 +375,7 @@ app.post('/api/otp/send', otpLimiter, async (req, res) => {
 app.post('/api/otp/verify', otpLimiter, async (req, res) => {
   const { phone, otp } = req.body;
 
-  if (MSG91_AUTH_KEY && MSG91_TEMPLATE_ID) {
+  if (false && MSG91_AUTH_KEY && MSG91_TEMPLATE_ID) {
     try {
       const response = await new Promise((resolve, reject) => {
         const req2 = https.request({
