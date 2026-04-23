@@ -20,7 +20,6 @@ const helmet = require('helmet');
 const app = express();
 app.set('trust proxy', 1);
 
-
 // Security headers
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -76,9 +75,9 @@ app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 20,                  // max connections in pool
-  idleTimeoutMillis: 30000, // close idle connections after 30s
-  connectionTimeoutMillis: 2000, // fail fast if can't connect
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
 // ============================================================
@@ -91,45 +90,31 @@ cloudinary.config({
 });
 
 // ============================================================
-// MSG91 (SMS)
+// SMS CONFIG — Fast2SMS (no DLT registration required)
 // ============================================================
-const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
-const MSG91_TEMPLATE_ID = process.env.MSG91_TEMPLATE_ID;
-
+const FAST2SMS_API_KEY = process.env.FAST2SMS_API_KEY;
 
 // ============================================================
 // HELPERS
 // ============================================================
 
-// Send SMS to citizen
+// Send SMS to citizen via Fast2SMS
 async function sendSMS(phone, message) {
-  if (!MSG91_AUTH_KEY) {
-    console.log('SMS skipped (MSG91 not configured):', message);
+  if (!FAST2SMS_API_KEY) {
+    console.log('SMS skipped (Fast2SMS not configured):', message);
     return;
   }
   try {
-    const payload = JSON.stringify({
-      sender: 'VAANI',
-      route: '4',
-      country: '91',
-      sms: [{ message, to: ['91' + phone] }]
-    });
+    const url = `https://www.fast2sms.com/dev/bulkV2?authorization=${FAST2SMS_API_KEY}&route=q&message=${encodeURIComponent(message)}&numbers=${phone}&flash=0`;
     await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: 'api.msg91.com',
-        path: '/api/sendhttp.php',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'authkey': MSG91_AUTH_KEY,
-        }
-      }, (res) => {
-        res.on('data', () => {});
-        res.on('end', resolve);
-      });
-      req.on('error', reject);
-      req.write(payload);
-      req.end();
+      https.get(url, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          console.log('Fast2SMS SMS response:', data);
+          resolve(data);
+        });
+      }).on('error', reject);
     });
   } catch (err) {
     console.error('SMS failed:', err.message);
@@ -171,12 +156,10 @@ async function generateComplaintNo(districtCode) {
 // ROUTES — PUBLIC (no auth needed)
 // ============================================================
 
-// Health check
 app.get('/', (req, res) => {
   res.json({ status: 'AP Grievance API running', version: '1.0' });
 });
 
-// Get all districts
 app.get('/api/districts', async (req, res) => {
   const result = await pool.query(
     'SELECT id, name, name_te, code FROM districts ORDER BY name'
@@ -184,7 +167,6 @@ app.get('/api/districts', async (req, res) => {
   res.json(result.rows);
 });
 
-// Get mandals for a district
 app.get('/api/districts/:districtId/mandals', async (req, res) => {
   const result = await pool.query(
     'SELECT id, name, name_te FROM mandals WHERE district_id = $1 ORDER BY name',
@@ -193,7 +175,6 @@ app.get('/api/districts/:districtId/mandals', async (req, res) => {
   res.json(result.rows);
 });
 
-// Get all departments
 app.get('/api/departments', async (req, res) => {
   const result = await pool.query(
     'SELECT id, name, name_te, code, sla_days FROM departments WHERE is_active = TRUE ORDER BY name'
@@ -201,7 +182,6 @@ app.get('/api/departments', async (req, res) => {
   res.json(result.rows);
 });
 
-// Public dashboard stats
 app.get('/api/dashboard/public', async (req, res) => {
   const [districtStats, deptStats, totals] = await Promise.all([
     pool.query('SELECT * FROM district_summary ORDER BY total DESC'),
@@ -223,7 +203,6 @@ app.get('/api/dashboard/public', async (req, res) => {
   });
 });
 
-// Track complaint by complaint_no (public)
 app.get('/api/complaints/track/:complaintNo', async (req, res) => {
   const result = await pool.query(`
     SELECT
@@ -263,7 +242,6 @@ app.get('/api/complaints/track/:complaintNo', async (req, res) => {
 // ROUTES — CITIZEN AUTH
 // ============================================================
 
-// Register citizen (OTP-less — phone is the identity)
 app.post('/api/citizens/register', async (req, res) => {
   const { name, phone, email, district_id, mandal_id, village, lang_pref } = req.body;
 
@@ -272,7 +250,6 @@ app.post('/api/citizens/register', async (req, res) => {
   }
 
   try {
-    // Check if phone exists
     const existing = await pool.query(
       'SELECT id FROM citizens WHERE phone = $1', [phone]
     );
@@ -294,7 +271,7 @@ app.post('/api/citizens/register', async (req, res) => {
     );
 
     await sendSMS(phone,
-      `నమస్కారం ${name}! AP Grievance Portal లో రిజిస్టర్ అయినందుకు ధన్యవాదాలు. మీ ఫిర్యాదులను నమోదు చేయడానికి యాప్‌ను ఉపయోగించండి.`
+      `Welcome to Vaani! Your complaint portal for Andhra Pradesh. File complaints at vaani-ecru.vercel.app`
     );
 
     res.json({ token, citizen });
@@ -303,7 +280,6 @@ app.post('/api/citizens/register', async (req, res) => {
   }
 });
 
-// Login citizen by phone (send OTP in production — simplified here)
 app.post('/api/citizens/login', async (req, res) => {
   const { phone } = req.body;
   const result = await pool.query(
@@ -323,14 +299,12 @@ app.post('/api/citizens/login', async (req, res) => {
   );
   res.json({ token, citizen });
 });
+
 // ============================================================
-// OTP VERIFICATION
-// ============================================================ß
-// ============================================================
-// OTP VERIFICATION (Twilio Verify)
+// OTP VERIFICATION — Fast2SMS
 // ============================================================
 
-const otpStore = new Map(); // fallback for dev
+const otpStore = new Map();
 
 app.post('/api/otp/send', otpLimiter, async (req, res) => {
   const { phone } = req.body;
@@ -338,36 +312,38 @@ app.post('/api/otp/send', otpLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Valid 10-digit phone number required' });
   }
 
-  if (MSG91_AUTH_KEY && MSG91_TEMPLATE_ID) {
+  // Generate OTP and store it
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  otpStore.set(phone, { otp, expires: Date.now() + 10 * 60 * 1000 });
+
+  if (FAST2SMS_API_KEY) {
     try {
+      const message = `Your Vaani OTP is ${otp}. Valid for 10 minutes. Do not share with anyone.`;
+      const url = `https://www.fast2sms.com/dev/bulkV2?authorization=${FAST2SMS_API_KEY}&route=q&message=${encodeURIComponent(message)}&numbers=${phone}&flash=0`;
+
       const response = await new Promise((resolve, reject) => {
-        const req2 = https.request({
-          hostname: 'control.msg91.com',
-          path: `/api/v5/otp?template_id=${MSG91_TEMPLATE_ID}&mobile=91${phone}&authkey=${MSG91_AUTH_KEY}&realTimeResponse=1&sender=VAANI`,
-          method: 'GET',
-        }, (res2) => {
+        https.get(url, (res2) => {
           let data = '';
           res2.on('data', chunk => data += chunk);
           res2.on('end', () => {
-            console.log('MSG91 send response:', data);
-            try { resolve(JSON.parse(data)); } catch(e) { resolve({ type: 'error', message: data }); }
-          });        });
-        req2.on('error', reject);
-        req2.end();
+            console.log('Fast2SMS OTP response:', data);
+            try { resolve(JSON.parse(data)); } catch(e) { resolve({ return: false }); }
+          });
+        }).on('error', reject);
       });
-          if (response.type === 'success') {
-        // Temporary: return dev_otp until DLT registration complete
+
+      if (response.return === true) {
         return res.json({ message: 'OTP sent successfully' });
       }
-      throw new Error(response.message || 'MSG91 error');
+      console.error('Fast2SMS failed:', response);
+      // Fall through to dev OTP if Fast2SMS fails
     } catch (err) {
-      console.error('MSG91 OTP error:', err.message);
+      console.error('Fast2SMS error:', err.message);
+      // Fall through to dev OTP
     }
   }
 
-  // Fallback dev OTP
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  otpStore.set(phone, { otp, expires: Date.now() + 10 * 60 * 1000 });
+  // Dev fallback — show OTP in response (remove in production)
   console.log(`Dev OTP for ${phone}: ${otp}`);
   res.json({ message: 'OTP sent', dev_otp: otp });
 });
@@ -375,36 +351,14 @@ app.post('/api/otp/send', otpLimiter, async (req, res) => {
 app.post('/api/otp/verify', otpLimiter, async (req, res) => {
   const { phone, otp } = req.body;
 
-  if (false && MSG91_AUTH_KEY && MSG91_TEMPLATE_ID) {
-    try {
-      const response = await new Promise((resolve, reject) => {
-        const req2 = https.request({
-          hostname: 'control.msg91.com',
-          path: `/api/v5/otp/verify?mobile=91${phone}&otp=${otp}&authkey=${MSG91_AUTH_KEY}`,
-          method: 'GET',
-        }, (res2) => {
-          let data = '';
-          res2.on('data', chunk => data += chunk);
-          res2.on('end', () => resolve(JSON.parse(data)));
-        });
-        req2.on('error', reject);
-        req2.end();
-      });
-      if (response.type === 'success') {
-        return res.json({ verified: true, message: 'Phone verified successfully' });
-      }
-      return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
-    } catch (err) {
-      console.error('MSG91 verify error:', err.message);
-      return res.status(400).json({ error: 'Verification failed. Please try again.' });
-    }
-  }
-
-  // Fallback dev OTP check
   const record = otpStore.get(phone);
-  if (!record) return res.status(400).json({ error: 'No OTP requested.' });
-  if (Date.now() > record.expires) { otpStore.delete(phone); return res.status(400).json({ error: 'OTP expired.' }); }
-  if (record.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP.' });
+  if (!record) return res.status(400).json({ error: 'No OTP requested. Please request a new OTP.' });
+  if (Date.now() > record.expires) {
+    otpStore.delete(phone);
+    return res.status(400).json({ error: 'OTP expired. Please request a new one.' });
+  }
+  if (record.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
+
   otpStore.delete(phone);
   res.json({ verified: true, message: 'Phone verified successfully' });
 });
@@ -423,7 +377,6 @@ app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('atta
     is_anonymous, aadhaar
   } = req.body;
 
-  // Validate required fields
   if (!department_id || !district_id || !title || !description) {
     return res.status(400).json({ error: 'Department, district, title and description are required' });
   }
@@ -432,29 +385,24 @@ app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('atta
   try {
     await client.query('BEGIN');
 
-    // Get district code for complaint number
     const distResult = await client.query(
       'SELECT code FROM districts WHERE id = $1', [district_id]
     );
     if (!distResult.rows.length) throw new Error('Invalid district');
     const districtCode = distResult.rows[0].code;
 
-    // Get SLA deadline
     const deptResult = await client.query(
       'SELECT sla_days FROM departments WHERE id = $1', [department_id]
     );
     const slaDays = deptResult.rows[0]?.sla_days || 7;
     const slaDeadline = new Date(Date.now() + slaDays * 86400000);
 
-    // Generate complaint number
     const complaintNo = await generateComplaintNo(districtCode);
 
-    // Hash aadhaar if provided
     const aadhaarHash = aadhaar
       ? crypto.createHash('sha256').update(aadhaar).digest('hex')
       : null;
 
-    // If filing anonymously, update citizen's aadhaar hash
     if (aadhaar && req.user.id) {
       await client.query(
         'UPDATE citizens SET aadhaar_hash = $1 WHERE id = $2',
@@ -462,7 +410,6 @@ app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('atta
       );
     }
 
-    // Insert complaint
     const compResult = await client.query(`
       INSERT INTO complaints (
         complaint_no, citizen_id, department_id, district_id, mandal_id,
@@ -485,13 +432,11 @@ app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('atta
 
     const complaint = compResult.rows[0];
 
-    // Log initial timeline entry
     await client.query(`
       INSERT INTO complaint_timeline (complaint_id, status, note)
       VALUES ($1, 'submitted', 'Complaint received')
     `, [complaint.id]);
 
-    // Upload attachments to Cloudinary
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
         const b64 = Buffer.from(file.buffer).toString('base64');
@@ -514,19 +459,17 @@ app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('atta
 
     await client.query('COMMIT');
 
-    // Send SMS confirmation
     const citizenResult = await pool.query(
       'SELECT phone, name, lang_pref FROM citizens WHERE id = $1', [req.user.id]
     );
     if (citizenResult.rows.length) {
       const { phone, name, lang_pref } = citizenResult.rows[0];
       const msg = lang_pref === 'te'
-        ? `నమస్కారం ${name}! మీ ఫిర్యాదు నమోదైంది. ID: ${complaintNo}. స్థితిని ట్రాక్ చేయడానికి ఈ IDని సేవ్ చేసుకోండి.`
-        : `Dear ${name}, your complaint has been registered. ID: ${complaintNo}. Save this ID to track your complaint status.`;
+        ? `Dear ${name}, your complaint has been registered on Vaani. ID: ${complaintNo}. Track at vaani-ecru.vercel.app/track`
+        : `Dear ${name}, your complaint has been registered on Vaani. ID: ${complaintNo}. Track at vaani-ecru.vercel.app/track`;
       await sendSMS(phone, msg);
     }
 
-    // Log notification
     await pool.query(`
       INSERT INTO notifications (complaint_id, citizen_id, channel, message, status)
       VALUES ($1, $2, 'sms', $3, 'sent')
@@ -547,7 +490,6 @@ app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('atta
   }
 });
 
-// Get citizen's own complaints
 app.get('/api/complaints/mine', authMiddleware, async (req, res) => {
   const result = await pool.query(`
     SELECT
@@ -567,7 +509,6 @@ app.get('/api/complaints/mine', authMiddleware, async (req, res) => {
 // ROUTES — OFFICER DASHBOARD
 // ============================================================
 
-// Officer login
 app.post('/api/officers/login', async (req, res) => {
   const { email, password } = req.body;
   const result = await pool.query(
@@ -579,7 +520,6 @@ app.post('/api/officers/login', async (req, res) => {
   }
   const officer = result.rows[0];
 
-  // Check plain text first (for dev), then bcrypt
   const validPlain = password === 'Vaani@1234';
   const validBcrypt = await bcrypt.compare(password, officer.password_hash);
   if (!validPlain && !validBcrypt) {
@@ -596,7 +536,6 @@ app.post('/api/officers/login', async (req, res) => {
   res.json({ token, officer: { id: officer.id, name: officer.name, role: officer.role } });
 });
 
-// Get complaints assigned to officer's department
 app.get('/api/officer/complaints', officerOnly, async (req, res) => {
   const { status, priority, district_id, page = 1 } = req.query;
   const limit = 20;
@@ -606,7 +545,6 @@ app.get('/api/officer/complaints', officerOnly, async (req, res) => {
   let params = [];
   let idx = 1;
 
-  // Supervisors/collectors see all; officers see their dept only
   if (req.user.role === 'officer') {
     where.push(`c.department_id = $${idx++}`);
     params.push(req.user.dept);
@@ -637,7 +575,6 @@ app.get('/api/officer/complaints', officerOnly, async (req, res) => {
   res.json(result.rows);
 });
 
-// Update complaint status (officer action)
 app.patch('/api/officer/complaints/:id/status', officerOnly, async (req, res) => {
   const { status, note } = req.body;
   const validStatuses = ['acknowledged', 'assigned', 'in_progress', 'resolved', 'rejected'];
@@ -658,13 +595,11 @@ app.patch('/api/officer/complaints/:id/status', officerOnly, async (req, res) =>
       WHERE id = $3::uuid
     `, [status, status, req.params.id]);
 
-    // Add note to timeline
     await client.query(`
       INSERT INTO complaint_timeline (complaint_id, status, note, updated_by)
       VALUES ($1::uuid, $2, $3, $4)
     `, [req.params.id, status, note || null, req.user.id]);
 
-    // Notify citizen via SMS
     const citizenResult = await client.query(`
       SELECT cit.phone, cit.name, cit.lang_pref, c.complaint_no
       FROM complaints c
@@ -675,15 +610,9 @@ app.patch('/api/officer/complaints/:id/status', officerOnly, async (req, res) =>
     if (citizenResult.rows.length) {
       const { phone, name, lang_pref, complaint_no } = citizenResult.rows[0];
       const statusMessages = {
-        acknowledged: lang_pref === 'te'
-          ? `మీ ఫిర్యాదు ${complaint_no} స్వీకరించబడింది.`
-          : `Your complaint ${complaint_no} has been acknowledged.`,
-        in_progress: lang_pref === 'te'
-          ? `మీ ఫిర్యాదు ${complaint_no} పై పని ప్రారంభమైంది.`
-          : `Work has started on your complaint ${complaint_no}.`,
-        resolved: lang_pref === 'te'
-          ? `మీ ఫిర్యాదు ${complaint_no} పరిష్కరించబడింది. మీ అభిప్రాయాన్ని పంచుకోండి.`
-          : `Your complaint ${complaint_no} has been resolved. Please share your feedback.`
+        acknowledged: `Your Vaani complaint ${complaint_no} has been acknowledged by the officer.`,
+        in_progress: `Work has started on your Vaani complaint ${complaint_no}.`,
+        resolved: `Your Vaani complaint ${complaint_no} has been resolved. Thank you for using Vaani!`
       };
       if (statusMessages[status]) {
         await sendSMS(phone, statusMessages[status]);
@@ -700,7 +629,6 @@ app.patch('/api/officer/complaints/:id/status', officerOnly, async (req, res) =>
   }
 });
 
-// Officer dashboard stats
 app.get('/api/officer/dashboard', officerOnly, async (req, res) => {
   const deptFilter = req.user.role === 'officer'
     ? `WHERE c.department_id = ${req.user.dept}` : '';
@@ -717,6 +645,59 @@ app.get('/api/officer/dashboard', officerOnly, async (req, res) => {
   res.json(result.rows[0]);
 });
 
+app.get('/api/officer/complaints/:id', officerOnly, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        c.id, c.complaint_no, c.title, c.description,
+        c.status, c.priority, c.created_at, c.sla_deadline,
+        c.is_overdue, c.upvote_count,
+        c.latitude, c.longitude, c.address,
+        c.village, c.is_anonymous,
+        d.name AS district, d.code AS district_code,
+        dep.name AS department, dep.code AS dept_code,
+        m.name AS mandal,
+        cit.name AS citizen_name, cit.phone AS citizen_phone,
+        cit.lang_pref,
+        o.name AS assigned_to
+      FROM complaints c
+      JOIN districts d ON d.id = c.district_id
+      JOIN departments dep ON dep.id = c.department_id
+      LEFT JOIN mandals m ON m.id = c.mandal_id
+      LEFT JOIN citizens cit ON cit.id = c.citizen_id
+      LEFT JOIN govt_officers o ON o.id = c.assigned_to
+      WHERE c.id = $1::uuid
+    `, [req.params.id]);
+
+    if (!result.rows.length) return res.status(404).json({ error: 'Complaint not found' });
+
+    const complaint = result.rows[0];
+
+    const attachments = await pool.query(`
+      SELECT file_url, file_type, file_size_kb
+      FROM complaint_attachments
+      WHERE complaint_id = $1::uuid
+      ORDER BY uploaded_at ASC
+    `, [req.params.id]);
+
+    const timeline = await pool.query(`
+      SELECT t.status, t.note, t.created_at, o.name AS updated_by
+      FROM complaint_timeline t
+      LEFT JOIN govt_officers o ON o.id = t.updated_by
+      WHERE t.complaint_id = $1::uuid
+      ORDER BY t.created_at ASC
+    `, [req.params.id]);
+
+    res.json({
+      complaint,
+      attachments: attachments.rows,
+      timeline: timeline.rows,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ============================================================
 // START SERVER
 // ============================================================
@@ -730,7 +711,7 @@ module.exports = app;
 // ============================================================
 // AUTO-ESCALATION CRON JOB (runs every hour)
 // ============================================================
-const ESCALATION_INTERVAL = 60 * 60 * 1000; // 1 hour
+const ESCALATION_INTERVAL = 60 * 60 * 1000;
 
 async function runEscalation() {
   console.log('🔄 Running SLA escalation check...');
@@ -774,9 +755,7 @@ async function runEscalation() {
         ]);
 
         if (complaint.citizen_phone) {
-          const msg = complaint.lang_pref === 'te'
-            ? 'మీ ఫిర్యాదు ' + complaint.complaint_no + ' గడువు దాటింది. మేము దీన్ని అత్యవసర స్థాయికి పెంచాము.'
-            : 'Your complaint ' + complaint.complaint_no + ' has breached its SLA deadline and has been escalated to Emergency priority.';
+          const msg = `Your Vaani complaint ${complaint.complaint_no} has passed its deadline and been escalated to Emergency priority.`;
           await sendSMS(complaint.citizen_phone, msg);
         }
 
@@ -802,7 +781,6 @@ setInterval(runEscalation, ESCALATION_INTERVAL);
 // UPVOTING
 // ============================================================
 
-// Get upvote count + check if phone already upvoted
 app.get('/api/complaints/:complaintNo/upvotes', async (req, res) => {
   const voterIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
   try {
@@ -826,9 +804,7 @@ app.get('/api/complaints/:complaintNo/upvotes', async (req, res) => {
   }
 });
 
-// Upvote a complaint
 app.post('/api/complaints/:complaintNo/upvote', async (req, res) => {
-  // Get IP address — works on Render behind proxy
   const voterIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
 
   const client = await pool.connect();
@@ -843,7 +819,6 @@ app.post('/api/complaints/:complaintNo/upvote', async (req, res) => {
 
     const { id, upvote_count, priority } = complaint.rows[0];
 
-    // Check already upvoted by this IP
     const existing = await client.query(
       'SELECT id FROM complaint_upvotes WHERE complaint_id = $1 AND voter_ip = $2',
       [id, voterIp]
@@ -853,20 +828,17 @@ app.post('/api/complaints/:complaintNo/upvote', async (req, res) => {
       return res.status(409).json({ error: 'Already upvoted', upvote_count });
     }
 
-    // Insert upvote with IP only — no phone collected
     await client.query(
       'INSERT INTO complaint_upvotes (complaint_id, voter_ip) VALUES ($1, $2)',
       [id, voterIp]
     );
 
-    // Increment count
     const newCount = (upvote_count || 0) + 1;
     await client.query(
       'UPDATE complaints SET upvote_count = $1 WHERE id = $2',
       [newCount, id]
     );
 
-    // Auto-escalate to high priority if 10+ upvotes
     if (newCount >= 10 && priority === 'normal') {
       await client.query(
         'UPDATE complaints SET priority = $1 WHERE id = $2',
@@ -924,68 +896,6 @@ app.get('/api/complaints/public', async (req, res) => {
     `, params);
 
     res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Auto-set is_public helper (used during complaint filing)
-async function isPublicDepartment(departmentId) {
-  const PUBLIC_DEPT_IDS = [1, 2, 3, 5, 6]; // Roads, Water, Elec, Edu, Municipal
-  return PUBLIC_DEPT_IDS.includes(parseInt(departmentId));
-}
-
-// Full complaint detail for officers (includes description, attachments, GPS)
-app.get('/api/officer/complaints/:id', officerOnly, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT
-        c.id, c.complaint_no, c.title, c.description,
-        c.status, c.priority, c.created_at, c.sla_deadline,
-        c.is_overdue, c.upvote_count,
-        c.latitude, c.longitude, c.address,
-        c.village, c.is_anonymous,
-        d.name AS district, d.code AS district_code,
-        dep.name AS department, dep.code AS dept_code,
-        m.name AS mandal,
-        cit.name AS citizen_name, cit.phone AS citizen_phone,
-        cit.lang_pref,
-        o.name AS assigned_to
-      FROM complaints c
-      JOIN districts d ON d.id = c.district_id
-      JOIN departments dep ON dep.id = c.department_id
-      LEFT JOIN mandals m ON m.id = c.mandal_id
-      LEFT JOIN citizens cit ON cit.id = c.citizen_id
-      LEFT JOIN govt_officers o ON o.id = c.assigned_to
-      WHERE c.id = $1::uuid
-    `, [req.params.id]);
-
-    if (!result.rows.length) return res.status(404).json({ error: 'Complaint not found' });
-
-    const complaint = result.rows[0];
-
-    // Get attachments
-    const attachments = await pool.query(`
-      SELECT file_url, file_type, file_size_kb
-      FROM complaint_attachments
-      WHERE complaint_id = $1::uuid
-      ORDER BY uploaded_at ASC
-    `, [req.params.id]);
-
-    // Get timeline
-    const timeline = await pool.query(`
-      SELECT t.status, t.note, t.created_at, o.name AS updated_by
-      FROM complaint_timeline t
-      LEFT JOIN govt_officers o ON o.id = t.updated_by
-      WHERE t.complaint_id = $1::uuid
-      ORDER BY t.created_at ASC
-    `, [req.params.id]);
-
-    res.json({
-      complaint,
-      attachments: attachments.rows,
-      timeline: timeline.rows,
-    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
