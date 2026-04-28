@@ -707,7 +707,7 @@ app.get('/api/officer/complaints/:id', officerOnly, async (req, res) => {
 // ============================================================
 const PORT = process.env.PORT || 3001;
 app.use('/api/ai', require('./routes/ai')(pool));
-app.use('/api/officer/ai', require('./routes/officerAi')(pool, officerOnly));
+
 
 app.listen(PORT, () => {
   console.log(`AP Grievance API running on port ${PORT}`);
