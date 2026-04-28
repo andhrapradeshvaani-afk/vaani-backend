@@ -5,3 +5,7 @@ node_modules/
 vaani-frontend/
 node_modules/
 .env
+
+# Local download / scratch dirs
+files/
+*.zip

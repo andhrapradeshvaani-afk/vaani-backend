@@ -458,6 +458,9 @@ app.post('/api/complaints', complaintLimiter, authMiddleware, upload.array('atta
     }
 
     await client.query('COMMIT');
+// Fire-and-forget AI extraction. Don't block the citizen's response.
+    require('./services/aiExtractor').extractAndStore(pool, complaint.id)
+      .catch((err) => console.error('[ai] extraction failed for', complaint.id, err.message));
 
     const citizenResult = await pool.query(
       'SELECT phone, name, lang_pref FROM citizens WHERE id = $1', [req.user.id]
@@ -620,6 +623,7 @@ app.patch('/api/officer/complaints/:id/status', officerOnly, async (req, res) =>
     }
 
     await client.query('COMMIT');
+
     res.json({ message: 'Status updated successfully' });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -702,6 +706,7 @@ app.get('/api/officer/complaints/:id', officerOnly, async (req, res) => {
 // START SERVER
 // ============================================================
 const PORT = process.env.PORT || 3001;
+app.use('/api/ai', require('./routes/ai')(pool));
 app.listen(PORT, () => {
   console.log(`AP Grievance API running on port ${PORT}`);
 });
