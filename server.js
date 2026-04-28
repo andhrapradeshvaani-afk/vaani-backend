@@ -779,8 +779,10 @@ async function runEscalation() {
   }
 }
 
-runEscalation();
-setInterval(runEscalation, ESCALATION_INTERVAL);
+runEscalation().catch(err => console.error('[startup] runEscalation failed (non-fatal):', err.message));
+setInterval(() => {
+  runEscalation().catch(err => console.error('[interval] runEscalation failed:', err.message));
+}, ESCALATION_INTERVAL);
 
 // ============================================================
 // UPVOTING
